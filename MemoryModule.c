@@ -61,7 +61,6 @@ typedef struct {
     CustomLoadLibraryFunc loadLibrary;
     CustomGetProcAddressFunc getProcAddress;
     CustomFreeLibraryFunc freeLibrary;
-    void *userdata;
     ExeEntryProc exeEntry;
     DWORD pageSize;
 } MEMORYMODULE, *PMEMORYMODULE;
@@ -120,8 +119,7 @@ CopySections(const unsigned char *data, size_t size, PIMAGE_NT_HEADERS old_heade
                 dest = (unsigned char *)module->alloc(codeBase + section->VirtualAddress,
                     section_size,
                     MEM_COMMIT,
-                    PAGE_READWRITE,
-                    module->userdata);
+                    PAGE_READWRITE);
                 if (dest == NULL) {
                     return FALSE;
                 }
@@ -145,8 +143,7 @@ CopySections(const unsigned char *data, size_t size, PIMAGE_NT_HEADERS old_heade
         dest = (unsigned char *)module->alloc(codeBase + section->VirtualAddress,
                             section->SizeOfRawData,
                             MEM_COMMIT,
-                            PAGE_READWRITE,
-                            module->userdata);
+                            PAGE_READWRITE);
         if (dest == NULL) {
             return FALSE;
         }
@@ -206,7 +203,7 @@ FinalizeSection(PMEMORYMODULE module, PSECTIONFINALIZEDATA sectionData) {
              (sectionData->size % module->pageSize) == 0)
            ) {
             // Only allowed to decommit whole pages
-            module->free(sectionData->address, sectionData->size, MEM_DECOMMIT, module->userdata);
+            module->free(sectionData->address, sectionData->size, MEM_DECOMMIT);
         }
         return TRUE;
     }
@@ -385,7 +382,7 @@ BuildImportTable(PMEMORYMODULE module)
         uintptr_t *thunkRef;
         FARPROC *funcRef;
         HCUSTOMMODULE *tmp;
-        HCUSTOMMODULE handle = module->loadLibrary((LPCSTR) (codeBase + importDesc->Name), module->userdata);
+        HCUSTOMMODULE handle = module->loadLibrary((LPCSTR) (codeBase + importDesc->Name));
         if (handle == NULL) {
             SetLastError(ERROR_MOD_NOT_FOUND);
             result = FALSE;
@@ -394,7 +391,7 @@ BuildImportTable(PMEMORYMODULE module)
 
         tmp = (HCUSTOMMODULE *) realloc(module->modules, (module->numModules+1)*(sizeof(HCUSTOMMODULE)));
         if (tmp == NULL) {
-            module->freeLibrary(handle, module->userdata);
+            module->freeLibrary(handle);
             SetLastError(ERROR_OUTOFMEMORY);
             result = FALSE;
             break;
@@ -412,10 +409,10 @@ BuildImportTable(PMEMORYMODULE module)
         }
         for (; *thunkRef; thunkRef++, funcRef++) {
             if (IMAGE_SNAP_BY_ORDINAL(*thunkRef)) {
-                *funcRef = module->getProcAddress(handle, (LPCSTR)IMAGE_ORDINAL(*thunkRef), module->userdata);
+                *funcRef = module->getProcAddress(handle, (LPCSTR)IMAGE_ORDINAL(*thunkRef));
             } else {
                 PIMAGE_IMPORT_BY_NAME thunkData = (PIMAGE_IMPORT_BY_NAME) (codeBase + (*thunkRef));
-                *funcRef = module->getProcAddress(handle, (LPCSTR)&thunkData->Name, module->userdata);
+                *funcRef = module->getProcAddress(handle, (LPCSTR)&thunkData->Name);
             }
             if (*funcRef == 0) {
                 result = FALSE;
@@ -424,7 +421,7 @@ BuildImportTable(PMEMORYMODULE module)
         }
 
         if (!result) {
-            module->freeLibrary(handle, module->userdata);
+            module->freeLibrary(handle);
             SetLastError(ERROR_PROC_NOT_FOUND);
             break;
         }
@@ -433,22 +430,19 @@ BuildImportTable(PMEMORYMODULE module)
     return result;
 }
 
-LPVOID MemoryDefaultAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect, void* userdata)
+LPVOID MemoryDefaultAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
 {
-	UNREFERENCED_PARAMETER(userdata);
 	return VirtualAlloc(address, size, allocationType, protect);
 }
 
-BOOL MemoryDefaultFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType, void* userdata)
+BOOL MemoryDefaultFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType)
 {
-	UNREFERENCED_PARAMETER(userdata);
 	return VirtualFree(lpAddress, dwSize, dwFreeType);
 }
 
-HCUSTOMMODULE MemoryDefaultLoadLibrary(LPCSTR filename, void *userdata)
+HCUSTOMMODULE MemoryDefaultLoadLibrary(LPCSTR filename)
 {
     HMODULE result;
-    UNREFERENCED_PARAMETER(userdata);
     result = LoadLibraryA(filename);
     if (result == NULL) {
         return NULL;
@@ -457,21 +451,19 @@ HCUSTOMMODULE MemoryDefaultLoadLibrary(LPCSTR filename, void *userdata)
     return (HCUSTOMMODULE) result;
 }
 
-FARPROC MemoryDefaultGetProcAddress(HCUSTOMMODULE module, LPCSTR name, void *userdata)
+FARPROC MemoryDefaultGetProcAddress(HCUSTOMMODULE module, LPCSTR name)
 {
-    UNREFERENCED_PARAMETER(userdata);
     return (FARPROC) GetProcAddress((HMODULE) module, name);
 }
 
-void MemoryDefaultFreeLibrary(HCUSTOMMODULE module, void *userdata)
+void MemoryDefaultFreeLibrary(HCUSTOMMODULE module)
 {
-    UNREFERENCED_PARAMETER(userdata);
     FreeLibrary((HMODULE) module);
 }
 
-HMEMORYMODULE MemoryLoadLibrary(const void *data, size_t size)
+HMEMORYMODULE MemoryLoadLibrary(const void *data, size_t size, void *userdata)
 {
-    return MemoryLoadLibraryEx(data, size, MemoryDefaultAlloc, MemoryDefaultFree, MemoryDefaultLoadLibrary, MemoryDefaultGetProcAddress, MemoryDefaultFreeLibrary, NULL);
+    return MemoryLoadLibraryEx(data, size, MemoryDefaultAlloc, MemoryDefaultFree, MemoryDefaultLoadLibrary, MemoryDefaultGetProcAddress, MemoryDefaultFreeLibrary, userdata);
 }
 
 HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
@@ -556,16 +548,14 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
     code = (unsigned char *)allocMemory((LPVOID)(old_header->OptionalHeader.ImageBase),
         alignedImageSize,
         MEM_RESERVE | MEM_COMMIT,
-        PAGE_READWRITE,
-        userdata);
+        PAGE_READWRITE);
 
     if (code == NULL) {
         // try to allocate memory at arbitrary position
         code = (unsigned char *)allocMemory(NULL,
             alignedImageSize,
             MEM_RESERVE | MEM_COMMIT,
-            PAGE_READWRITE,
-            userdata);
+            PAGE_READWRITE);
         if (code == NULL) {
             SetLastError(ERROR_OUTOFMEMORY);
             return NULL;
@@ -574,7 +564,7 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
 
     result = (PMEMORYMODULE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(MEMORYMODULE));
     if (result == NULL) {
-        freeMemory(code, 0, MEM_RELEASE, userdata);
+        freeMemory(code, 0, MEM_RELEASE);
         SetLastError(ERROR_OUTOFMEMORY);
         return NULL;
     }
@@ -586,7 +576,6 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
     result->loadLibrary = loadLibrary;
     result->getProcAddress = getProcAddress;
     result->freeLibrary = freeLibrary;
-    result->userdata = userdata;
     result->pageSize = sysInfo.dwPageSize;
 
     if (!CheckSize(size, old_header->OptionalHeader.SizeOfHeaders)) {
@@ -597,8 +586,7 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
     headers = (unsigned char *)allocMemory(code,
         old_header->OptionalHeader.SizeOfHeaders,
         MEM_COMMIT,
-        PAGE_READWRITE,
-        userdata);
+        PAGE_READWRITE);
 
     // copy PE header to code
     memcpy(headers, dos_header, old_header->OptionalHeader.SizeOfHeaders);
@@ -641,7 +629,7 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
         if (result->isDLL) {
             DllEntryProc DllEntry = (DllEntryProc)(LPVOID)(code + result->headers->OptionalHeader.AddressOfEntryPoint);
             // notify library about attaching to process
-            BOOL successfull = (*DllEntry)((HINSTANCE)code, DLL_PROCESS_ATTACH, 0);
+            BOOL successfull = (*DllEntry)((HINSTANCE)code, DLL_PROCESS_ATTACH, userdata);
             if (!successfull) {
                 SetLastError(ERROR_DLL_INIT_FAILED);
                 goto error;
@@ -738,7 +726,7 @@ void MemoryFreeLibrary(HMEMORYMODULE mod)
         int i;
         for (i=0; i<module->numModules; i++) {
             if (module->modules[i] != NULL) {
-                module->freeLibrary(module->modules[i], module->userdata);
+                module->freeLibrary(module->modules[i]);
             }
         }
 
@@ -747,7 +735,7 @@ void MemoryFreeLibrary(HMEMORYMODULE mod)
 
     if (module->codeBase != NULL) {
         // release memory of library
-        module->free(module->codeBase, 0, MEM_RELEASE, module->userdata);
+        module->free(module->codeBase, 0, MEM_RELEASE);
     }
 
     HeapFree(GetProcessHeap(), 0, module);

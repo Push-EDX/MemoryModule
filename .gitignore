@@ -1,5 +1,6 @@
-*.o
-*.obj
-*.exe
-tests/*.dll
-tests/*.res
+**/*.o
+**/*.obj
+**/*.exe
+**/*.dll
+**/*.res
+**/Build/
